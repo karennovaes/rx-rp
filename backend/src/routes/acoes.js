@@ -12,7 +12,7 @@ router.post('/', async (req, res) => {
       qtdCarros, vagasPorCarro 
     } = req.body;
 
-    // Se for Fuga, calculamos as vagas totais multiplicando carros x vagas por carro
+    // Se for Fuga, o total de vagas é calculado multiplicando carros x vagas por carro
     let vagasCalculadas = vagasTotais;
     if (tipoAcao === 'FUGA' && qtdCarros && vagasPorCarro) {
       vagasCalculadas = qtdCarros * vagasPorCarro;
@@ -21,9 +21,9 @@ router.post('/', async (req, res) => {
     const novaAcao = await prisma.acao.create({
       data: {
         titulo,
-        dataHora: new Date(dataHora), // Garante o formato de data do JS
-        tipoAcao, // "TIRO" ou "FUGA"
-        porteAcao,
+        dataHora: new Date(dataHora), // Converte a string enviada para o formato Date do JS
+        tipoAcao,                     // "TIRO" ou "FUGA"
+        porteAcao,                    // "Pequena", "Média", "Grande", "Evento"
         vagasTotais: Number(vagasCalculadas),
         comando,
         usaRefens: !!usaRefens,
@@ -35,40 +35,50 @@ router.post('/', async (req, res) => {
 
     res.status(201).json(novaAcao);
   } catch (error) {
-    console.error(error);
+    console.error("Erro ao criar ação:", error);
     res.status(400).json({ erro: "Erro ao criar escalação de ação." });
   }
 });
 
-// 2. LISTAR TODAS AS AÇÕES COM AVISO AUTOMÁTICO DE FORMAÇÃO (GET)
+// 2. LISTAR TODAS AS AÇÕES (GET) - Com injeção automática de Armamento e Horário de Formação
 router.get('/', async (req, res) => {
   try {
     const acoes = await prisma.acao.findMany({
       include: {
         participantes: {
-          include: { membro: true } // Já traz os dados dos membros inscritos junto
+          include: { 
+            membro: true // Já traz os dados do membro (nome, passaporte, cargo) junto na lista
+          }
         }
       },
-      orderBy: { dataHora: 'asc' }
+      orderBy: { dataHora: 'asc' } // Mostra as ações mais próximas primeiro
     });
 
-    // Mapeia as ações para injetar as regras automáticas de armamento e horário
+    // Mapeia o resultado para injetar as regras de negócio inteligentes
     const acoesFormatadas = acoes.map(acao => {
       const dataAcao = new Date(acao.dataHora);
-      // Calcula 45 minutos antes para a formação
+      
+      // Calcula o horário de formação subtraindo 45 minutos da hora original (45 * 60 * 1000 ms)
       const dataFormacao = new Date(dataAcao.getTime() - 45 * 60000);
       
-      // Regra de Armamento Automático baseado no Tipo/Porte da ação de Tiro
+      // Regra de Armamento Automático baseado no Porte da Ação de Tiro
       let armamentoSugerido = "Nenhum especificado";
+      
       if (acao.tipoAcao === 'TIRO') {
-        if (acao.porteAcao === 'Pequena') armamentoSugerido = "Pistolas (Glock/FiveSeven) + Colete Leve";
-        else if (acao.porteAcao === 'Média') armamentoSugerido = "Submetralhadoras (MP5/Uzi) + Colete Médio";
-        else if (acao.porteAcao === 'Grande') armamentoSugerido = "Fuzis (M4/AK47) + Gás + Colete Pesado";
-        else if (acao.porteAcao === 'Evento') armamentoSugerido = "Armamento liberado pelo Comando da Ação";
-      } else {
-        armamentoSugerido = "Armamento velado para fuga (Pistola básica)";
+        if (acao.porteAcao === 'Pequena') {
+          armamentoSugerido = "Pistolas + Colete Leve";
+        } else if (acao.porteAcao === 'Média') {
+          armamentoSugerido = "Submetralhadoras (Mtar) + Colete";
+        } else if (acao.porteAcao === 'Grande') {
+          armamentoSugerido = "Fuzis (Sig / AK47) + Colete + Algema + Capuz";
+        } else if (acao.porteAcao === 'Evento') {
+          armamentoSugerido = "Armamento do Evento";
+        }
+      } else if (acao.tipoAcao === 'FUGA') {
+        armamentoSugerido = "Fuga Limpa";
       }
 
+      // Retorna o objeto da ação com os campos virtuais calculados na hora
       return {
         ...acao,
         horarioFormacao: dataFormacao.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
@@ -79,29 +89,31 @@ router.get('/', async (req, res) => {
 
     res.json(acoesFormatadas);
   } catch (error) {
-    console.error(error);
+    console.error("Erro ao buscar ações:", error);
     res.status(500).json({ erro: "Erro ao buscar ações." });
   }
 });
 
-// 3. CANDIDATAR-SE A UMA AÇÃO (POST) - Usado pelos Membros
+// 3. SE CANDIDATAR A UMA VAGA (POST) - Com inteligência de Fila de Espera (Reserva)
 router.post('/:id/inscrever', async (req, res) => {
   try {
     const acaoId = Number(req.params.id);
     const { membroId } = req.body;
 
-    // 1. Busca a ação para ver quantas vagas principais ela tem
+    // 1. Busca a ação para verificar o limite de vagas
     const acao = await prisma.acao.findUnique({
       where: { id: acaoId },
       include: { participantes: true }
     });
 
-    if (!acao) return res.status(404).json({ erro: "Ação não encontrada." });
+    if (!acao) {
+      return res.status(404).json({ erro: "Ação não encontrada." });
+    }
 
-    // 2. Conta quantos já estão na vaga "PRINCIPAL"
+    // 2. Conta quantos membros já preencheram as vagas principais
     const qtdPrincipais = acao.participantes.filter(p => p.tipoVaga === 'PRINCIPAL').length;
 
-    // 3. Se ainda houver vagas, entra como PRINCIPAL. Se não, vai automático para RESERVA.
+    // 3. Se ainda houver vaga no contador principal, entra como PRINCIPAL. Se não, vai automático para RESERVA.
     const tipoVaga = qtdPrincipais < acao.vagasTotais ? 'PRINCIPAL' : 'RESERVA';
 
     const novaInscricao = await prisma.participanteAcao.create({
@@ -110,7 +122,9 @@ router.post('/:id/inscrever', async (req, res) => {
         membroId: Number(membroId),
         tipoVaga
       },
-      include: { membro: true }
+      include: { 
+        membro: true 
+      }
     });
 
     res.status(201).json({
@@ -119,8 +133,10 @@ router.post('/:id/inscrever', async (req, res) => {
     });
 
   } catch (error) {
-    console.error(error);
-    res.status(400).json({ erro: "Você já está inscrito nesta ação ou o membro informado é inválido." });
+    console.error("Erro ao inscrever membro:", error);
+    res.status(400).json({ 
+      erro: "Não foi possível concluir a inscrição. Você já pode estar inscrito nesta ação ou o membro informado é inválido." 
+    });
   }
 });
 
