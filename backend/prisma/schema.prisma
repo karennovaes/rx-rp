@@ -22,3 +22,35 @@ model Membro {
   acoes ParticipanteAcao[]
 }
 
+model Acao {
+  id               Int                @id @default(autoincrement())
+  titulo           String
+  dataHora         DateTime
+  tipoAcao         String             // "TIRO" ou "FUGA"
+  porteAcao        String?            // "Pequena", "Média", "Grande", "Evento" (Apenas Tiro)
+  vagasTotais      Int
+  comando          String             // Quem vai liderar
+  usaRefens        Boolean            @default(false)
+  qtdRefens        Int                @default(0)
+  qtdCarros        Int?               // Apenas Fuga
+  vagasPorCarro    Int?               // Apenas Fuga
+  criadoEm         DateTime           @default(now())
+  
+  // Relacionamento para saber quem se inscreveu nesta ação
+  participantes    ParticipanteAcao[]
+}
+
+model ParticipanteAcao {
+  id         Int      @id @default(autoincrement())
+  acaoId     Int
+  membroId   Int
+  tipoVaga   String   // "PRINCIPAL" ou "RESERVA"
+  carroNum   Int?     // Se for fuga, podemos opcionalmente marcar em qual carro a pessoa está
+  inscritoEm DateTime @default(now())
+
+  // Relações
+  acao       Acao     @relation(fields: [acaoId], references: [id], onDelete: Cascade)
+  membro     Membro   @relation(fields: [membroId], references: [id], onDelete: Cascade)
+
+  @@unique([acaoId, membroId]) // Impede o membro de se candidatar duas vezes na mesma ação
+}
