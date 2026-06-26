@@ -4,12 +4,12 @@
 // Get a free hosted Postgres database in seconds: `npx create-db`
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // Nossa primeira tabela!
@@ -19,4 +19,6 @@ model Membro {
   passaporte Int      @unique // ID do jogo (não pode repetir)
   cargo      String   // Ex: Líder, Frente, Membro
   criadoEm   DateTime @default(now()) // Data de registro automática
+  acoes ParticipanteAcao[]
 }
+
