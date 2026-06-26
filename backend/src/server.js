@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import membroRoutes from './routes/membros.js'; // <-- Importação das rotas
+
 
 // Inicializa as variáveis de ambiente (onde ficarão as senhas)
 dotenv.config();
@@ -19,6 +21,12 @@ app.get('/api/status', (req, res) => {
     status: "ok"
   });
 });
+
+
+
+//  Conectando as rotas de membros na URL principal
+app.use('/api/membros', membroRoutes);
+
 
 // Liga o servidor e fica escutando a porta
 app.listen(PORT, () => {
