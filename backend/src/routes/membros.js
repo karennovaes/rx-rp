@@ -15,7 +15,7 @@ router.post('/', async (req, res) => {
 
     res.status(201).json(novoMembro);
   } catch (error) {
-    console.error(error);
+    console.error("ERRO REAL AQUI Ó:", error);
     res.status(400).json({ erro: "Erro ao cadastrar membro. O passaporte já pode estar em uso." });
   }
 });
