@@ -17,6 +17,7 @@ model Membro {
   nome                        String
   passaporte                  Int                @unique
   cargo                       String             // "Líder", "Gerente", "P1", "Elite", "Membro", "Vapor"
+  discordId                   String?            // <-- NOVO: ID do Discord do membro (ex: "2839402840294820")
   criadoEm                    DateTime           @default(now())
   
   // Histórico de desempenho acumulado na semana
@@ -30,6 +31,14 @@ model Membro {
   acoes                       ParticipanteAcao[]
 }
 
+// --- NOVA TABELA INTERMEDIÁRIA ---
+model FilaDiscord {
+  id          Int      @id @default(autoincrement())
+  discordId   String
+  novoCargo   String
+  status      String   @default("PENDENTE") // "PENDENTE" ou "CONCLUIDO"
+  criadoEm    DateTime @default(now())
+}
 model Acao {
   id                 Int                @id @default(autoincrement())
   titulo             String

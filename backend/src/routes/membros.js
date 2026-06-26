@@ -91,6 +91,31 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// 6. ATUALIZAR CARGO DO MEMBRO E ENVIAR PARA A FILA DO DISCORD (PATCH)
+router.patch('/:id/cargo', async (req, res) => {
+  try {
+    const { novoCargo } = req.body;
+    const membroId = Number(req.params.id);
+
+    // 1. Atualiza o cargo no banco de dados do Supabase
+    const membroAtualizado = await prisma.membro.update({
+      where: { id: membroId },
+      data: { cargo: novoCargo }
+    });
+
+    // 2. Log de simulação para o Bot do Discord
+    console.log(`[DISCORD EVENT] 🤖 O membro ${membroAtualizado.nome} (ID: ${membroAtualizado.id}) teve o cargo alterado para: ${novoCargo.toUpperCase()}. Prontinho para enviar para o Discord no futuro!`);
+
+    res.json({
+      mensagem: `Cargo atualizado para ${novoCargo} com sucesso no banco de dados!`,
+      membro: membroAtualizado
+    });
+
+  } catch (error) {
+    console.error("Erro ao atualizar cargo do membro:", error);
+    res.status(400).json({ erro: "Erro ao atualizar cargo do membro." });
+  }
+});
 
 
 export default router;
