@@ -3,94 +3,182 @@ import prisma from '../database.js';
 
 const router = express.Router();
 
-// 1. DEFINIR OU ATUALIZAR METAS PARA UM GRUPO (POST) -> Usado por Líderes
+// 1. DEFINIR METAS POR CARGO E SEUS ITENS MULTIPLOS (POST)
 router.post('/definir', async (req, res) => {
   try {
-    const { grupoAlvo, metaAcoes, metaDinheiroSujo, metaItensFarme } = req.body; // grupoAlvo: "ELITE" ou "MEMBRO"
+    const { 
+      cargoAlvo, metaAcoes, metaDinheiroSujo, itensFarme, // itensFarme deve ser um array: [{"nomeItem": "Gatilho", "quantidade": 20}]
+      pctLavagem, pctFaccao, pctMembros 
+    } = req.body; 
 
-    const metaAtualizada = await prisma.meta.upsert({
-      where: { grupoAlvo: grupoAlvo.toUpperCase() },
+    const cargoFormatado = cargoAlvo.toUpperCase();
+
+    // 1. Cria ou atualiza a meta base do cargo
+    const metaBase = await prisma.meta.upsert({
+      where: { cargoAlvo: cargoFormatado },
       update: {
-        metaAcoes: Number(metaAcoes || 0),
-        metaDinheiroSujo: Number(metaDinheiroSujo || 0),
-        metaItensFarme: Number(metaItensFarme || 0)
+        metaAcoes: metaAcoes ? Number(metaAcoes) : undefined,
+        metaDinheiroSujo: metaDinheiroSujo ? Number(metaDinheiroSujo) : undefined,
+        pctLavagem: pctLavagem ? Number(pctLavagem) : undefined,
+        pctFaccao: pctFaccao ? Number(pctFaccao) : undefined,
+        pctMembros: pctMembros ? Number(pctMembros) : undefined
       },
       create: {
-        grupoAlvo: grupoAlvo.toUpperCase(),
+        cargoAlvo: cargoFormatado,
         metaAcoes: Number(metaAcoes || 0),
         metaDinheiroSujo: Number(metaDinheiroSujo || 0),
-        metaItensFarme: Number(metaItensFarme || 0)
+        pctLavagem: Number(pctLavagem || 30),
+        pctFaccao: Number(pctFaccao || 60),
+        pctMembros: Number(pctMembros || 40)
       }
     });
 
-    res.json({ mensagem: `Meta do grupo ${grupoAlvo} configurada!`, dados: metaAtualizada });
+    // 2. Se foram enviados itens de farme, limpa os antigos e adiciona a nova lista técnica
+    if (itensFarme && Array.isArray(itensFarme)) {
+      await prisma.metaItem.deleteMany({ where: { metaId: metaBase.id } });
+      
+      for (const item of itensFarme) {
+        await prisma.metaItem.create({
+          data: {
+            metaId: metaBase.id,
+            nomeItem: item.nomeItem,
+            quantidade: Number(item.quantidade)
+          }
+        });
+      }
+    }
+
+    res.json({ mensagem: `Metas do cargo ${cargoFormatado} definidas com sucesso!` });
   } catch (error) {
-    res.status(400).json({ erro: "Erro ao definir parâmetros da meta." });
+    console.error(error);
+    res.status(400).json({ erro: "Erro ao definir parâmetros das metas." });
   }
 });
 
-// 2. ADICIONAR FARME MANUALMENTE (PATCH) -> Quando o membro guarda itens de farme no baú
+// 2. ADICIONAR ENTREGA DE FARME DO MEMBRO (PATCH) - Trata múltiplos itens via JSON
 router.patch('/membro/:id/farme', async (req, res) => {
   try {
-    const { quantidade } = req.body;
+    const { nomeItem, quantidade } = req.body;
+    const membroId = Number(req.params.id);
+
+    const membro = await prisma.membro.findUnique({ where: { id: membroId } });
+    if (!membro) return res.status(404).json({ erro: "Membro não encontrado." });
+
+    // Modifica o JSON de entregas atuais
+    let itensAtuais = typeof membro.itensFarmadosJson === 'string' 
+      ? JSON.parse(membro.itensFarmadosJson) 
+      : (membro.itensFarmadosJson || {});
+
+    itensAtuais[nomeItem] = (itensAtuais[nomeItem] || 0) + Number(quantidade);
+
     const membroAtualizado = await prisma.membro.update({
-      where: { id: Number(req.params.id) },
-      data: { itensFarmados: { increment: Number(quantidade) } }
+      where: { id: membroId },
+      data: { itensFarmadosJson: itensAtuais }
     });
-    res.json({ mensagem: "Farme contabilizado com sucesso!", itensFarmadosTotal: membroAtualizado.itensFarmados });
+
+    res.json({ mensagem: "Entrega registrada!", inventarioSemanal: membroAtualizado.itensFarmadosJson });
   } catch (error) {
     res.status(400).json({ erro: "Erro ao registrar farme." });
   }
 });
 
-// 3. PAINEL DE METAS E QUADRO DE DESEMPENHO GERAL (GET)
+// 3. QUADRO DE METAS INTELIGENTE POR CARGO (GET)
 router.get('/painel', async (req, res) => {
   try {
-    const metas = await prisma.meta.findMany();
+    const metas = await prisma.meta.findMany({ include: { itensExigidos: true } });
     const membros = await prisma.membro.findMany();
 
-    // Mapeia cada membro calculando a porcentagem de conclusão da meta dele
-    const quadroDesempenho = membros.map(membro => {
-      // Identifica o grupo de meta dele com base no cargo
-      const chaveGrupo = membro.cargo.toUpperCase() === "ELITE" ? "ELITE" : "MEMBRO";
-      const metaDoGrupo = metas.find(m => m.grupoAlvo === chaveGrupo) || { metaAcoes: 1, metaDinheiroSujo: 1, metaItensFarme: 1 };
+    const rankingDesempenho = membros.map(membro => {
+      const cargoUpper = membro.cargo.toUpperCase();
+      const metaDoCargo = metas.find(m => m.cargoAlvo === cargoUpper);
 
-      const totalAcoesParticipadas = membro.acoesGanhas + membro.acoesPerdidas;
+      const totalAcoes = membro.acoesGanhas + membro.acoesPerdidas;
+      let resumoMetas = {};
+      let pctTotal = 0;
+      let checagens = 0;
+
+      // --- LOGICA DE REQUISITOS POR CARGO ---
       
-      // Calcula as taxas de entrega em %
-      const pctAcoes = Math.min((totalAcoesParticipadas / (metaDoGrupo.metaAcoes || 1)) * 100, 100);
-      const pctDinheiro = Math.min((membro.totalDinheiroSujoArrecadado / (metaDoGrupo.metaDinheiroSujo || 1)) * 100, 100);
-      const pctFarme = Math.min((membro.itensFarmados / (metaDoGrupo.metaItensFarme || 1)) * 100, 100);
+      // 1. Vapor e Membro -> Focados apenas em Itens de Farme
+      if (["VAPOR", "MEMBRO"].includes(cargoUpper) && metaDoCargo) {
+        let progressoItens = [];
+        let totalPctItens = 0;
+        const itensEntregues = typeof membro.itensFarmadosJson === 'string' ? JSON.parse(membro.itensFarmadosJson) : (membro.itensFarmadosJson || {});
 
-      // Média geral batida
-      const progressoGeral = (pctAcoes + pctDinheiro + pctFarme) / 3;
+        if (metaDoCargo.itensExigidos.length > 0) {
+          metaDoCargo.itensExigidos.forEach(itemMeta => {
+            const entregue = itensEntregues[itemMeta.nomeItem] || 0;
+            const pct = Math.min((entregue / itemMeta.quantidade) * 100, 100);
+            totalPctItens += pct;
+            progressoItens.push(`${itemMeta.nomeItem}: ${entregue}/${itemMeta.quantidade} (${pct.toFixed(0)}%)`);
+          });
+          pctTotal = totalPctItens / metaDoCargo.itensExigidos.length;
+        } else {
+          pctTotal = 100; // Se não configurou item, considera batido
+        }
+        resumoMetas.farmeExigido = progressoItens;
+        checagens = 1;
+      }
+
+      // 2. P1 -> Focado puramente em Dinheiro Sujo
+      else if (cargoUpper === "P1" && metaDoCargo) {
+        pctTotal = Math.min((membro.totalDinheiroSujoArrecadado / (metaDoCargo.metaDinheiroSujo || 1)) * 100, 100);
+        resumoMetas.dinheiroSujo = `R$ ${membro.totalDinheiroSujoArrecadado}/R$ ${metaDoCargo.metaDinheiroSujo} (${pctTotal.toFixed(0)}%)`;
+        checagens = 1;
+      }
+
+      // 3. Elite -> Ações OU Dinheiro Sujo (O que ele bater primeiro ou média, vamos calcular o foco definido)
+      else if (cargoUpper === "ELITE" && metaDoCargo) {
+        const pctAcoes = Math.min((totalAcoes / (metaDoCargo.metaAcoes || 1)) * 100, 100);
+        const pctGrana = Math.min((membro.totalDinheiroSujoArrecadado / (metaDoCargo.metaDinheiroSujo || 1)) * 100, 100);
+        
+        // No caso do Elite, como você mencionou "Ações ou Dinheiro Sujo", daremos o maior progresso alcançado
+        pctTotal = Math.max(pctAcoes, pctGrana);
+        resumoMetas.acoes = `${totalAcoes}/${metaDoCargo.metaAcoes} (${pctAcoes.toFixed(0)}%)`;
+        resumoMetas.dinheiroSujo = `R$ ${membro.totalDinheiroSujoArrecadado}/R$ ${metaDoCargo.metaDinheiroSujo} (${pctGrana.toFixed(0)}%)`;
+        checagens = 1;
+      }
+
+      // 4. Líder e Gerente -> Ações Gerais/Administração
+      else {
+        pctTotal = metaDoCargo && metaDoCargo.metaAcoes > 0 ? Math.min((totalAcoes / metaDoCargo.metaAcoes) * 100, 100) : 100;
+        resumoMetas.acoesComando = `${totalAcoes}/${metaDoCargo?.metaAcoes || 0}`;
+        checagens = 1;
+      }
 
       return {
         id: membro.id,
         nome: membro.nome,
-        passaporte: membro.passaporte,
         cargo: membro.cargo,
-        estatisticas: {
-          vitorias: membro.acoesGanhas,
-          derrotas: membro.acoesPerdidas,
-          winRate: totalAcoesParticipadas > 0 ? `${((membro.acoesGanhas / totalAcoesParticipadas) * 100).toFixed(1)}%` : "0%"
-        },
-        metasAtuais: {
-          acoes: `${totalAcoesParticipadas}/${metaDoGrupo.metaAcoes} (${pctAcoes.toFixed(0)}%)`,
-          dinheiroSujo: `R$ ${membro.totalDinheiroSujoArrecadado}/R$ ${metaDoGrupo.metaDinheiroSujo} (${pctDinheiro.toFixed(0)}%)`,
-          farme: `${membro.itensFarmados}/${metaDoGrupo.metaItensFarme} (${pctFarme.toFixed(0)}%)`,
-          metaBatida: progressoGeral >= 100
-        }
+        passaporte: membro.passaporte,
+        vitoriasDerrotas: `${membro.acoesGanhas}V / ${membro.acoesPerdidas}D`,
+        progressoDaMeta: `${pctTotal.toFixed(0)}%`,
+        metaConcluida: pctTotal >= 100,
+        detalhes: resumoMetas
       };
     });
 
-    res.json({
-      configuracaoMetas: metas,
-      rankingDesempenho: quadroDesempenho.sort((a, b) => b.estatisticas.vitorias - a.estatisticas.vitorias) // ordena por quem tem mais vitória
-    });
+    res.json({ rankingSemanal: rankingDesempenho });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ erro: "Erro ao gerar painel de controle." });
+    res.status(500).json({ erro: "Erro ao renderizar painel de metas por cargo." });
+  }
+});
+
+// 4. RESET SEMANAL
+router.post('/reset-semanal', async (req, res) => {
+  try {
+    await prisma.membro.updateMany({
+      data: {
+        acoesGanhas: 0,
+        acoesPerdidas: 0,
+        totalDinheiroSujoArrecadado: 0,
+        itensFarmadosJson: "{}"
+      }
+    });
+    res.json({ mensagem: "🔄 Quadro semanal resetado com sucesso!" });
+  } catch (error) {
+    res.status(400).json({ erro: "Erro ao resetar semana." });
   }
 });
 

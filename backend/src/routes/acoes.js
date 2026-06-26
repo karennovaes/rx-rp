@@ -148,11 +148,11 @@ router.patch('/:id/status', async (req, res) => {
   }
 });
 
-// 6. FECHAR AÇÃO, CALCULAR FINANÇAS E ATUALIZAR METAS/HISTÓRICO DO MEMBRO (POST)
+// 6. FECHAR AÇÃO UTILIZANDO AS PORCENTAGENS CONFIGURÁVEIS DA GERÊNCIA (POST)
 router.post('/:id/fechar', async (req, res) => {
   try {
     const acaoId = Number(req.params.id);
-    const { resultado, valorSujoTotal } = req.body; // resultado: "GANHA", "PERDIDA", "CANCELADA"
+    const { resultado, valorSujoTotal } = req.body; 
 
     const acao = await prisma.acao.findUnique({
       where: { id: acaoId },
@@ -160,52 +160,64 @@ router.post('/:id/fechar', async (req, res) => {
     });
 
     if (!acao) return res.status(404).json({ erro: "Ação não encontrada." });
-    if (acao.status === "CONCLUIDA") return res.status(400).json({ erro: "Esta ação já foi fechada anteriormente." });
+    if (acao.status === "CONCLUIDA") return res.status(400).json({ erro: "Esta ação já foi fechada." });
 
     let dadosFechamento = {
       status: "CONCLUIDA",
       resultado: resultado.toUpperCase()
     };
 
-    // Descobre os membros que participaram de verdade (Vaga principal + Presença confirmada)
     const participantesValidos = acao.participantes.filter(p => p.tipoVaga === "PRINCIPAL" && p.checkIn === true);
 
-    let porMembro = 0;
-    let faccao = 0;
-    let aposLavagem = 0;
-    const bruto = Number(valorSujoTotal || 0);
-
     if (resultado.toUpperCase() === "GANHA") {
-      aposLavagem = bruto * 0.70; // Desconto dos 30% da lavagem
-      faccao = aposLavagem * 0.60; // 60% para o Baú
-      const membrosTotal = aposLavagem * 0.40; // 40% para os participantes
+      const bruto = Number(valorSujoTotal || 0);
+
+      // 1. BUSCA AS CONFIGURAÇÕES DE PORCENTAGEM DA GERÊNCIA
+      // Como as taxas são gerais, buscamos a configuração do grupo "MEMBRO" como padrão do sistema
+      let configuracaoJanela = await prisma.meta.findUnique({ where: { grupoAlvo: "MEMBRO" } });
+      
+      // Caso a gerência ainda não tenha configurado nada, usamos o padrão de segurança
+      const taxas = configuracaoJanela || { pctLavagem: 30, pctFaccao: 60, pctMembros: 40 };
+
+      // 2. CÁLCULO DINÂMICO BASEADO NO BANCO DE DADOS
+      const fatorLavagem = (100 - taxas.pctLavagem) / 100; // Ex: (100 - 30) / 100 = 0.70
+      const fatorFaccao = taxas.pctFaccao / 100;          // Ex: 60 / 100 = 0.60
+      const fatorMembros = taxas.pctMembros / 100;        // Ex: 40 / 100 = 0.40
+
+      const aposLavagem = bruto * fatorLavagem; 
+      const faccao = aposLavagem * fatorFaccao; 
+      const membrosTotal = aposLavagem * fatorMembros; 
       
       const qtdMembros = participantesValidos.length || 1;
-      porMembro = membrosTotal / qtdMembros;
+      const porMembro = membrosTotal / qtdMembros;
 
       dadosFechamento = {
         ...dadosFechamento,
         valorSujoTotal: bruto,
+        pctLavagemAplicada: taxas.pctLavagem,
         valorAposLavagem: aposLavagem,
         lucroFaccao: faccao,
         lucroMembros: membrosTotal,
         lucroPorMembro: porMembro
       };
-    }
 
-    // --- ENGENHARIA DE HISTÓRICO AUTOMÁTICO ---
-    // Fazemos um loop atualizando o perfil de cada membro que lutou nessa ação
-    for (const participante of participantesValidos) {
-      await prisma.membro.update({
-        where: { id: participante.membroId },
-        data: {
-          // Incrementa +1 ação ganha ou perdida usando o operador increment do Prisma
-          acoesGanhas: resultado.toUpperCase() === "GANHA" ? { increment: 1 } : undefined,
-          acoesPerdidas: resultado.toUpperCase() === "PERDIDA" ? { increment: 1 } : undefined,
-          // Acumula o dinheiro sujo bruto que esse membro ajudou a trazer para o progresso da meta
-          totalDinheiroSujoArrecadado: resultado.toUpperCase() === "GANHA" ? { increment: bruto } : undefined
-        }
-      });
+      // --- ATUALIZAÇÃO DO HISTÓRICO DOS PARTICIPANTES ---
+      for (const participante of participantesValidos) {
+        await prisma.membro.update({
+          where: { id: participante.membroId },
+          data: {
+            acoesGanhas: { increment: 1 },
+            totalDinheiroSujoArrecadado: { increment: bruto }
+          }
+        });
+      }
+    } else if (resultado.toUpperCase() === "PERDIDA") {
+      for (const participante of participantesValidos) {
+        await prisma.membro.update({
+          where: { id: participante.membroId },
+          data: { acoesPerdidas: { increment: 1 } }
+        });
+      }
     }
 
     const acaoFinalizada = await prisma.acao.update({
@@ -214,17 +226,23 @@ router.post('/:id/fechar', async (req, res) => {
     });
 
     res.json({
-      mensagem: `Ação finalizada com sucesso! O histórico de desempenho de ${participantesValidos.length} membros foi atualizado automaticamente.`,
+      mensagem: `Ação finalizada com as taxas configuradas pela gerência!`,
+      taxasAplicadas: acaoFinalizada.pctLavagemAplicada ? {
+        lavagemRetida: `${acaoFinalizada.pctLavagemAplicada}%`,
+        divisaoBauFaccao: `${100 - acaoFinalizada.pctLavagemAplicada}% limpo -> de onde a faccao retém sua parte.`
+      } : "Nenhuma taxa aplicada.",
       resumoFinanceiro: resultado.toUpperCase() === "GANHA" ? {
-        totalDinheiroSujo: bruto,
-        guardarNoBauDaFaccao60: faccao,
-        pagamentoPorCadaMembroPresente: porMembro
-      } : "Ação fechada sem lucros financeiros. Histórico de derrotas atualizado."
+        totalBrutoSujo: dadosFechamento.valorSujoTotal,
+        limpoAposLavagem: dadosFechamento.valorAposLavagem,
+        enviadoAoBauFaccao: dadosFechamento.lucroFaccao,
+        divididoEntreMembros: dadosFechamento.lucroMembros,
+        recebidoPorCadaMembroPresente: dadosFechamento.lucroPorMembro
+      } : "Ação fechada sem movimentação financeira."
     });
 
   } catch (error) {
-    console.error("Erro ao fechar ação e atualizar metas:", error);
-    res.status(400).json({ erro: "Erro ao fechar contabilidade e metas da ação." });
+    console.error(error);
+    res.status(400).json({ erro: "Erro ao processar fechamento com taxas dinâmicas." });
   }
 });
 
