@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 // Importação das rotas
 import membroRoutes from './routes/membros.js'; // 
 import acaoRoutes from './routes/acoes.js';
+import metasRoutes from './routes/metas.js';
 
 
 // Inicializa as variáveis de ambiente (onde ficarão as senhas)
@@ -30,6 +31,7 @@ app.get('/api/status', (req, res) => {
 //  Conectando as rotas de membros na URL principal
 app.use('/api/membros', membroRoutes);
 app.use('/api/acoes', acaoRoutes); // <-- Adicionado aqui!
+app.use('/api/metas', metasRoutes);
 
 
 // Liga o servidor e fica escutando a porta

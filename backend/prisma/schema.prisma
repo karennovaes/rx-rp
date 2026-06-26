@@ -27,16 +27,24 @@ model Acao {
   titulo           String
   dataHora         DateTime
   tipoAcao         String             // "TIRO" ou "FUGA"
-  porteAcao        String?            // "Pequena", "Média", "Grande", "Evento" (Apenas Tiro)
+  porteAcao        String?            // "Pequena", "Média", "Grande", "Evento"
   vagasTotais      Int
-  comando          String             // Quem vai liderar
+  comando          String
   usaRefens        Boolean            @default(false)
   qtdRefens        Int                @default(0)
-  qtdCarros        Int?               // Apenas Fuga
-  vagasPorCarro    Int?               // Apenas Fuga
+  qtdCarros        Int?
+  vagasPorCarro    Int?
   criadoEm         DateTime           @default(now())
   
-  // Relacionamento para saber quem se inscreveu nesta ação
+  // --- NOVOS CAMPOS ---
+  status           String             @default("AGENDADA") // "AGENDADA", "FORMANDO", "CONCLUIDA", "CANCELADA"
+  resultado        String?            // "GANHA", "PERDIDA", "CANCELADA"
+  valorSujoTotal   Float?             // Valor bruto coletado na ação
+  valorAposLavagem Float?             // 70% do total (retirando os 30% da lavagem)
+  lucroFaccao      Float?             // 60% do valor lavado
+  lucroMembros     Float?             // 40% do valor lavado (para dividir pelo total de membros)
+  lucroPorMembro   Float?             // Quanto cada um da vaga PRINCIPAL vai receber
+  
   participantes    ParticipanteAcao[]
 }
 
@@ -45,12 +53,14 @@ model ParticipanteAcao {
   acaoId     Int
   membroId   Int
   tipoVaga   String   // "PRINCIPAL" ou "RESERVA"
-  carroNum   Int?     // Se for fuga, podemos opcionalmente marcar em qual carro a pessoa está
   inscritoEm DateTime @default(now())
+  
+  // --- NOVOS CAMPOS ---
+  checkIn    Boolean  @default(false)    // Se o membro marcou que "tá na HQ"
+  funcao     String   @default("Nenhuma") // Ex: "Piloto", "Atirador", "Negociador"
 
-  // Relações
   acao       Acao     @relation(fields: [acaoId], references: [id], onDelete: Cascade)
   membro     Membro   @relation(fields: [membroId], references: [id], onDelete: Cascade)
 
-  @@unique([acaoId, membroId]) // Impede o membro de se candidatar duas vezes na mesma ação
+  @@unique([acaoId, membroId])
 }
