@@ -10,4 +10,14 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Nossa primeira tabela!
+model Membro {
+  id         Int      @id @default(autoincrement())
+  nome       String   // Nome do personagem
+  passaporte Int      @unique // ID do jogo (não pode repetir)
+  cargo      String   // Ex: Líder, Frente, Membro
+  criadoEm   DateTime @default(now()) // Data de registro automática
 }
